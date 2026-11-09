@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#101513">
+<title>San Andreas: Offline Drive</title>
+<style>
+  :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+  * { box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #101513; }
+  canvas { display: block; width: 100%; height: 100%; }
+  #hud { position: fixed; inset: 0; pointer-events: none; color: #fff; text-shadow: 0 2px 4px #000; }
+  .panel { position: absolute; padding: 10px 13px; background: #111b18d9; border: 1px solid #ffffff24; border-radius: 8px; box-shadow: 0 4px 18px #0007; }
+  #brand { top: 16px; left: 16px; font-size: 13px; letter-spacing: .13em; font-weight: 900; }
+  #brand small { display: block; margin-top: 3px; color: #a9c5b6; font-size: 9px; letter-spacing: .18em; }
+  #stats { top: 16px; right: 16px; min-width: 154px; text-align: right; font-variant-numeric: tabular-nums; }
+  #money { color: #7ef09c; font-size: 19px; font-weight: 800; }
+  #wanted { margin-top: 2px; color: #ffd85b; letter-spacing: 3px; font-size: 18px; }
+  #mission { left: 50%; top: 17px; transform: translateX(-50%); text-align: center; min-width: 220px; }
+  #mission strong { color: #ffe66d; font-size: 11px; letter-spacing: .14em; }
+  #mission div { margin-top: 3px; font-size: 13px; }
+  #help { bottom: 14px; left: 50%; transform: translateX(-50%); width: max-content; max-width: calc(100vw - 24px); text-align: center; color: #e6eee9; font-size: 11px; line-height: 1.65; }
+  kbd { display: inline-block; padding: 0 5px; border: 1px solid #ffffff55; border-radius: 4px; background: #ffffff17; font: inherit; font-weight: 700; }
+  #toast { position: absolute; top: 28%; left: 50%; transform: translate(-50%,-50%); opacity: 0; transition: opacity .25s; color: #ffe66d; font-size: clamp(18px, 3vw, 30px); font-weight: 900; letter-spacing: .08em; text-align: center; }
+  #toast.show { opacity: 1; }
+  #map { position: absolute; right: 16px; bottom: 16px; width: 150px; height: 112px; border: 1px solid #ffffff70; border-radius: 7px; background: #14201b; box-shadow: 0 4px 16px #0008; }
+  @media (max-width: 650px) { #mission { top: 76px; } #map { width: 112px; height: 84px; right: 10px; bottom: 10px; } #brand { left: 10px; top: 10px; } #stats { right: 10px; top: 10px; } #help { bottom: 10px; font-size: 10px; } }
+</style>
+</head>
+<body>
+<canvas id="game" aria-label="Top-down open-world driving game"></canvas>
+<div id="hud">
+  <div id="brand" class="panel">SAN ANDREAS <small>OFFLINE DRIVE</small></div>
+  <div id="stats" class="panel"><div id="money">$0</div><div id="wanted">☆☆☆☆☆</div></div>
+  <div id="mission" class="panel"><strong>QUICK JOB</strong><div id="missionText">Find the gold marker</div></div>
+  <div id="toast"></div>
+  <div id="help" class="panel"><kbd>WASD</kbd> / <kbd>↑↓←→</kbd> move &amp; drive · <kbd>E</kbd> enter / exit · <kbd>Shift</kbd> boost · <kbd>R</kbd> restart</div>
+  <canvas id="map" width="300" height="224" aria-label="Mini map"></canvas>
+</div>
+<script>
+(() => {
+  'use strict';
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const mini = document.getElementById('map');
+  const mctx = mini.getContext('2d');
+  const moneyEl = document.getElementById('money');
+  const wantedEl = document.getElementById('wanted');
+  const missionEl = document.getElementById('missionText');
+  const toastEl = document.getElementById('toast');
+  const W = 2600, H = 1900, ROAD = 126, BLOCK = 390, STEP = ROAD + BLOCK;
+  const keys = new Set();
+  let dpr = 1, last = 0, cash = 0, wanted = 0, heat = 0, toastTimer = 0, job = 0;
+  const camera = { x: 0, y: 0 };
+  const player = { x: 322, y: 322, angle: 0, speed: 0, inCar: true, color: '#e34b3f', health: 100 };
+  const car = { x: player.x, y: player.y, angle: 0, speed: 0, color: '#e34b3f', length: 42, width: 23 };
+  const jobs = [{x:2200,y:280},{x:2200,y:1600},{x:300,y:1600},{x:1450,y:950},{x:800,y:280}];
+  const buildings = [], trees = [], traffic = [], cops = [];
+  let seed = 19371;
+  function rand(){ seed=(seed*1664525+1013904223)>>>0; return seed/4294967296; }
+  function resize(){ dpr=Math.min(devicePixelRatio||1,2); canvas.width=Math.floor(innerWidth*dpr); canvas.height=Math.floor(innerHeight*dpr); }
+  addEventListener('resize',resize); resize();
+  function makeCity(){
+    const palette=['#70776e','#817c70','#696f70','#8b8170','#626c67','#77766a'];
+    for(let gx=-1;gx<7;gx++) for(let gy=-1;gy<5;gy++){
+      const x=gx*STEP+ROAD+22, y=gy*STEP+ROAD+22;
+      if(rand()<.13){
+        for(let i=0;i<11;i++) trees.push({x:x+rand()*(BLOCK-44),y:y+rand()*(BLOCK-44),r:8+rand()*9});
+        continue;
+      }
+      const count=2+Math.floor(rand()*3);
+      for(let i=0;i<count;i++){
+        const bw=54+rand()*104,bh=52+rand()*104;
+        buildings.push({x:x+rand()*(BLOCK-bw-12),y:y+rand()*(BLOCK-bh-12),w:bw,h:bh,c:palette[Math.floor(rand()*palette.length)],roof:rand()});
+      }
+    }
+    const colors=['#d7c36a','#5f9ac2','#cf7259','#79aa77','#b77aa8','#d6d5ca'];
+    for(let i=0;i<20;i++) traffic.push({x:rand()*W,y:rand()*H,angle:rand()*Math.PI*2,speed:30+rand()*45,color:colors[i%colors.length],length:37,width:19});
+  }
+  makeCity();
+  function clamp(v,a,b){return Math.max(a,Math.min(b,v));}
+  function say(text){toastEl.textContent=text;toastEl.classList.add('show');toastTimer=2.2;}
+  function roadAt(x,y){ const rx=((x%STEP)+STEP)%STEP, ry=((y%STEP)+STEP)%STEP; return rx<ROAD||ry<ROAD; }
+  function setWanted(n){wanted=clamp(n,0,5); heat=Math.max(heat,10); wantedEl.textContent='★'.repeat(wanted)+'☆'.repeat(5-wanted);}
+  addEventListener('keydown',e=>{const k=e.key.toLowerCase(); if(['arrowup','arrowdown','arrowleft','arrowright',' '].includes(k))e.preventDefault(); keys.add(k); if(k==='e'&&!e.repeat)toggleCar(); if(k==='r'&&!e.repeat)restart();});
+  addEventListener('keyup',e=>keys.delete(e.key.toLowerCase()));
+  addEventListener('blur',()=>keys.clear());
+  function toggleCar(){
+    if(player.inCar){ player.inCar=false; player.x=car.x+Math.cos(car.angle+Math.PI/2)*34; player.y=car.y+Math.sin(car.angle+Math.PI/2)*34; player.speed=0; say('ON FOOT'); }
+    else if(Math.hypot(player.x-car.x,player.y-car.y)<76){player.inCar=true; player.x=car.x; player.y=car.y; say('VEHICLE ENTERED');}
+    else say('GET CLOSER TO YOUR CAR');
+  }
+  function restart(){cash=0;wanted=0;heat=0;job=0;player.x=322;player.y=322;player.angle=0;player.inCar=true;player.speed=0;car.x=322;car.y=322;car.angle=0;car.speed=0;wantedEl.textContent='☆☆☆☆☆';moneyEl.textContent='$0';missionEl.textContent='Find the gold marker';say('NEW RUN');}
+  function update(dt){
+    const up=keys.has('w')||keys.has('arrowup'), down=keys.has('s')||keys.has('arrowdown');
+    const left=keys.has('a')||keys.has('arrowleft'), right=keys.has('d')||keys.has('arrowright');
+    if(player.inCar){
+      const boost=keys.has('shift')?1.55:1;
+      car.speed+=(up?205:0)*dt; car.speed-=(down?270:0)*dt;
+      car.speed*=Math.pow(up||down?.992:.975,dt*60);
+      car.speed=clamp(car.speed,-115,330*boost);
+      const steering=(right?1:0)-(left?1:0);
+      car.angle+=steering*dt*(1.9+Math.min(Math.abs(car.speed)/100,1.7))*Math.sign(car.speed||1);
+      const nx=car.x+Math.cos(car.angle)*car.speed*dt, ny=car.y+Math.sin(car.angle)*car.speed*dt;
+      if(nx>22&&nx<W-22&&ny>22&&ny<H-22){car.x=nx;car.y=ny;}else car.speed*=-.25;
+      player.x=car.x;player.y=car.y;player.angle=car.angle;
+      if(Math.abs(car.speed)>90&&!roadAt(car.x,car.y)) car.speed*=Math.pow(.985,dt*60);
+      if(Math.abs(car.speed)>210&&rand()<dt*.22){setWanted(Math.max(1,wanted));}
+    }else{
+      const dx=(right?1:0)-(left?1:0),dy=(down?1:0)-(up?1:0),len=Math.hypot(dx,dy)||1;
+      const pace=keys.has('shift')?245:155;
+      player.x=clamp(player.x+dx/len*pace*dt,10,W-10);player.y=clamp(player.y+dy/len*pace*dt,10,H-10);
+      if(dx||dy)player.angle=Math.atan2(dy,dx);
+      if(Math.hypot(player.x-car.x,player.y-car.y)<44&&Math.abs(car.speed)>30){setWanted(wanted+1);car.speed*=.5;}
+    }
+    for(const t of traffic){t.x+=Math.cos(t.angle)*t.speed*dt;t.y+=Math.sin(t.angle)*t.speed*dt;if(t.x<0)t.x=W;if(t.x>W)t.x=0;if(t.y<0)t.y=H;if(t.y>H)t.y=0;}
+    for(let i=cops.length-1;i>=0;i--){const p=cops[i];const a=Math.atan2(player.y-p.y,player.x-p.x);p.x+=Math.cos(a)*p.speed*dt;p.y+=Math.sin(a)*p.speed*dt;if(Math.hypot(player.x-p.x,player.y-p.y)<30){cash=Math.max(0,cash-100);cops.splice(i,1);say('BUSTED · -$100');car.speed=0;}}
+    if(wanted>0){heat-=dt;if(heat<=0){wanted--;heat=12;if(wanted===0)say('YOU LOST THE HEAT');wantedEl.textContent='★'.repeat(wanted)+'☆'.repeat(5-wanted);}if(cops.length<wanted&&rand()<dt*.45){cops.push({x:clamp(player.x+(rand()-.5)*700,10,W-10),y:clamp(player.y+(rand()-.5)*700,10,H-10),speed:105+wanted*13});}}
+    const target=jobs[job%jobs.length];if(Math.hypot(player.x-target.x,player.y-target.y)<58){cash+=250;job++;moneyEl.textContent='$'+cash.toLocaleString();missionEl.textContent='Next drop: $250';say('JOB COMPLETE · +$250');}
+    camera.x=clamp(player.x-innerWidth/2,0,W-innerWidth);camera.y=clamp(player.y-innerHeight/2,0,H-innerHeight);
+    if(toastTimer>0){toastTimer-=dt;if(toastTimer<=0)toastEl.classList.remove('show');}
+  }
+  function roundedRect(c,x,y,w,h,r){c.beginPath();c.roundRect(x,y,w,h,r);}
+  function drawCar(c,x,y,a,color,l=42,w=23){c.save();c.translate(x,y);c.rotate(a);c.fillStyle='#141817';roundedRect(c,-l/2-2,-w/2-3,l+4,w+6,7);c.fill();c.fillStyle=color;roundedRect(c,-l/2,-w/2,l,w,6);c.fill();c.fillStyle='#a9c8c9';roundedRect(c,-l*.12,-w*.37,l*.3,w*.74,4);c.fill();c.fillStyle='#fff3b0';c.fillRect(l*.34,-w*.34,4,5);c.fillRect(l*.34,w*.12,4,5);c.restore();}
+  function draw(){
+    const vw=innerWidth,vh=innerHeight;ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,vw,vh);ctx.fillStyle='#505c4e';ctx.fillRect(0,0,vw,vh);
+    ctx.save();ctx.translate(-camera.x,-camera.y);
+    ctx.fillStyle='#555953';for(let x=-STEP;x<W+STEP;x+=STEP)ctx.fillRect(x,0,ROAD,H);for(let y=-STEP;y<H+STEP;y+=STEP)ctx.fillRect(0,y,W,ROAD);
+    ctx.strokeStyle='#c8b876';ctx.lineWidth=2;ctx.setLineDash([19,19]);for(let x=-STEP;x<W+STEP;x+=STEP){ctx.beginPath();ctx.moveTo(x+ROAD/2,0);ctx.lineTo(x+ROAD/2,H);ctx.stroke();}for(let y=-STEP;y<H+STEP;y+=STEP){ctx.beginPath();ctx.moveTo(0,y+ROAD/2);ctx.lineTo(W,y+ROAD/2);ctx.stroke();}ctx.setLineDash([]);
+    for(const b of buildings){ctx.fillStyle='#24292366';ctx.fillRect(b.x+7,b.y+9,b.w,b.h);ctx.fillStyle=b.c;roundedRect(ctx,b.x,b.y,b.w,b.h,5);ctx.fill();ctx.fillStyle='#ffffff12';ctx.fillRect(b.x+8,b.y+8,b.w-16,5);ctx.fillStyle='#303833';for(let wx=b.x+12;wx<b.x+b.w-8;wx+=24)for(let wy=b.y+17;wy<b.y+b.h-8;wy+=27)ctx.fillRect(wx,wy,8,7);}
+    for(const t of trees){ctx.fillStyle='#283c2b';ctx.beginPath();ctx.arc(t.x+4,t.y+6,t.r,0,Math.PI*2);ctx.fill();ctx.fillStyle='#537a4d';ctx.beginPath();ctx.arc(t.x,t.y,t.r,0,Math.PI*2);ctx.fill();}
+    for(const t of traffic)drawCar(ctx,t.x,t.y,t.angle,t.color,t.length,t.width);
+    for(const c of cops)drawCar(ctx,c.x,c.y,Math.atan2(player.y-c.y,player.x-c.x),'#e9ece8',42,23);
+    const target=jobs[job%jobs.length], pulse=12+Math.sin(performance.now()/180)*4;ctx.strokeStyle='#ffe66d';ctx.lineWidth=4;ctx.beginPath();ctx.arc(target.x,target.y,pulse,0,Math.PI*2);ctx.stroke();ctx.fillStyle='#ffe66d';ctx.beginPath();ctx.arc(target.x,target.y,5,0,Math.PI*2);ctx.fill();
+    if(player.inCar)drawCar(ctx,car.x,car.y,car.angle,car.color,car.length,car.width);else{ctx.fillStyle='#25221e';ctx.beginPath();ctx.arc(player.x,player.y,9,0,Math.PI*2);ctx.fill();ctx.fillStyle='#d5a77d';ctx.beginPath();ctx.arc(player.x,player.y-3,4,0,Math.PI*2);ctx.fill();}
+    ctx.restore();
+    drawMini();
+  }
+  function drawMini(){const w=mini.width,h=mini.height;mctx.clearRect(0,0,w,h);mctx.fillStyle='#65725c';mctx.fillRect(0,0,w,h);mctx.fillStyle='#474c49';for(let x=0;x<W;x+=STEP)mctx.fillRect(x/W*w,0,ROAD/W*w,h);for(let y=0;y<H;y+=STEP)mctx.fillRect(0,y/H*h,w,ROAD/H*h);for(const b of buildings){mctx.fillStyle='#8c8d7c';mctx.fillRect(b.x/W*w,b.y/H*h,b.w/W*w,b.h/H*h);}const j=jobs[job%jobs.length];mctx.fillStyle='#ffe66d';mctx.beginPath();mctx.arc(j.x/W*w,j.y/H*h,5,0,Math.PI*2);mctx.fill();mctx.fillStyle='#f45';mctx.beginPath();mctx.arc(player.x/W*w,player.y/H*h,5,0,Math.PI*2);mctx.fill();}
+  function frame(t){const dt=Math.min(.04,(t-last)/1000||0);last=t;update(dt);draw();requestAnimationFrame(frame);}
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
